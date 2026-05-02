@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import anthropic
+import google.generativeai as genai
 import requests
 import os
 import smtplib
@@ -10,24 +10,24 @@ from datetime import datetime
 app = Flask(__name__)
 
 # ─────────────────────────────────────────────
-#  CONFIGURATION (set these in your .env file)
+#  CONFIGURATION
 # ─────────────────────────────────────────────
-WHATSAPP_TOKEN    = os.environ.get("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID   = os.environ.get("PHONE_NUMBER_ID")
-VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "my_secret_verify_token")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-EMAIL_SENDER      = os.environ.get("EMAIL_SENDER")      # your Gmail address
-EMAIL_PASSWORD    = os.environ.get("EMAIL_PASSWORD")    # Gmail app password
-EMAIL_RECEIVER    = os.environ.get("EMAIL_RECEIVER")    # where results are sent
+WHATSAPP_TOKEN   = os.environ.get("WHATSAPP_TOKEN")
+PHONE_NUMBER_ID  = os.environ.get("PHONE_NUMBER_ID")
+VERIFY_TOKEN     = os.environ.get("VERIFY_TOKEN", "my_secret_verify_token")
+GEMINI_API_KEY   = os.environ.get("GEMINI_API_KEY")
+EMAIL_SENDER     = os.environ.get("EMAIL_SENDER")
+EMAIL_PASSWORD   = os.environ.get("EMAIL_PASSWORD")
+EMAIL_RECEIVER   = os.environ.get("EMAIL_RECEIVER")
 
-import google.generativeai as genai
-
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+# ─────────────────────────────────────────────
+#  SET UP GEMINI (FREE)
+# ─────────────────────────────────────────────
+genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
 # ─────────────────────────────────────────────
 #  YOUR FIXED RESEARCH QUESTIONS
-#  Add / edit questions here before deploying
 # ─────────────────────────────────────────────
 RESEARCH_QUESTIONS = [
     "Before this conversation, how familiar were you with AI-powered tools being used for academic research interviews?",
@@ -35,7 +35,6 @@ RESEARCH_QUESTIONS = [
     "How would you compare the experience of this WhatsApp interview with a traditional face-to-face or email-based interview?",
     "Do you feel this medium (WhatsApp AI agent) affected the honesty or depth of your responses in any way? Please explain.",
     "Would you participate in or recommend this method for future academic research? Why or why not?",
-    # ← Add more specific questions here
 ]
 
 RESEARCH_CONTEXT = """
@@ -52,7 +51,6 @@ You acknowledge answers before asking follow-ups, making respondents feel genuin
 
 # ─────────────────────────────────────────────
 #  IN-MEMORY SESSION STORE
-#  (For production, replace with Redis or a DB)
 # ─────────────────────────────────────────────
 sessions = {}
 
@@ -62,7 +60,6 @@ sessions = {}
 # ─────────────────────────────────────────────
 
 def generate_trigger_message():
-    """Ask Claude to craft an irresistible recruitment message."""
     prompt = """
 You are recruiting professionals to participate in a brief academic research interview via WhatsApp.
 
@@ -70,24 +67,19 @@ Write a compelling, irresistible WhatsApp message that:
 1. Opens by making the recipient feel their professional expertise is uniquely valuable
 2. Briefly states the research topic: the effectiveness of WhatsApp AI agents in conducting academic research
 3. Builds curiosity — make them feel like they are part of something groundbreaking
-4. Mentions it takes only 5–7 minutes
+4. Mentions it takes only 5-7 minutes
 5. Creates a sense of meaningful academic contribution
 6. Ends with a clear, frictionless call-to-action: reply YES to begin
 7. Is warm, professional, under 160 words
-8. Uses 1–2 emojis tastefully
+8. Uses 1-2 emojis tastefully
 
 Return only the message text, no labels or preamble.
 """
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=300,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return msg.content[0].text.strip()
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
 
 def generate_followup(question, answer, transcript_snippet):
-    """Generate a smart, contextual follow-up question based on the respondent's answer."""
     prompt = f"""
 {RESEARCH_CONTEXT}
 
@@ -108,7 +100,7 @@ Generate ONE follow-up question that:
 Return only the follow-up text. No labels, no preamble.
 """
     response = model.generate_content(prompt)
-return response.text.strip()
+    return response.text.strip()
 
 
 # ─────────────────────────────────────────────
@@ -116,7 +108,6 @@ return response.text.strip()
 # ─────────────────────────────────────────────
 
 def send_message(to, text):
-    """Send a WhatsApp text message via Meta Cloud API."""
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -137,12 +128,11 @@ def send_message(to, text):
 # ─────────────────────────────────────────────
 
 def email_transcript(respondent_number, transcript_lines):
-    """Email the completed interview transcript to the researcher."""
     transcript_text = "\n".join(transcript_lines)
     msg = MIMEMultipart()
     msg["From"]    = EMAIL_SENDER
     msg["To"]      = EMAIL_RECEIVER
-    msg["Subject"] = f"✅ Interview Completed — {respondent_number} [{datetime.now().strftime('%Y-%m-%d %H:%M')}]"
+    msg["Subject"] = f"Interview Completed - {respondent_number} [{datetime.now().strftime('%Y-%m-%d %H:%M')}]"
 
     body = f"""
 A new research interview has been completed.
@@ -150,13 +140,13 @@ A new research interview has been completed.
 Respondent : {respondent_number}
 Timestamp  : {datetime.now().strftime('%A, %d %B %Y at %H:%M:%S')}
 
-{'═'*55}
+{'='*55}
 FULL TRANSCRIPT
-{'═'*55}
+{'='*55}
 
 {transcript_text}
 
-{'═'*55}
+{'='*55}
 Sent automatically by your WhatsApp Research Agent
 """
     msg.attach(MIMEText(body, "plain"))
@@ -177,7 +167,7 @@ Sent automatically by your WhatsApp Research Agent
 def get_session(sender):
     if sender not in sessions:
         sessions[sender] = {
-            "stage": "not_started",   # not_started | in_progress | completed
+            "stage": "not_started",
             "q_index": 0,
             "awaiting_followup_answer": False,
             "current_question": None,
@@ -190,7 +180,7 @@ def process_message(sender, text):
     session = get_session(sender)
     stage   = session["stage"]
 
-    # ── AWAITING CONSENT ──
+    # AWAITING CONSENT
     if stage == "not_started":
         if any(w in text.lower() for w in ["yes", "yeah", "yep", "ok", "okay", "sure", "start", "begin", "go"]):
             intro = (
@@ -215,22 +205,20 @@ def process_message(sender, text):
         else:
             send_message(sender, (
                 "Hello! 👋 You've been invited to participate in a short academic research interview.\n\n"
-                "Reply *YES* to begin — it takes just 5–7 minutes and your insights truly matter. 😊"
+                "Reply *YES* to begin — it takes just 5-7 minutes and your insights truly matter. 😊"
             ))
         return
 
-    # ── INTERVIEW IN PROGRESS ──
+    # INTERVIEW IN PROGRESS
     if stage == "in_progress":
         q_index   = session["q_index"]
         awaiting  = session["awaiting_followup_answer"]
         current_q = session["current_question"]
 
-        # Record the answer
         label = "Follow-up answer" if awaiting else f"A{q_index + 1}"
         session["transcript"].append(f"{label}: {text}")
 
         if not awaiting:
-            # Generate AI follow-up for this fixed question
             snippet  = "\n".join(session["transcript"][-5:])
             followup = generate_followup(current_q, text, snippet)
             send_message(sender, followup)
@@ -238,7 +226,6 @@ def process_message(sender, text):
             session["awaiting_followup_answer"] = True
 
         else:
-            # Move to next fixed question
             next_index = q_index + 1
             session["awaiting_followup_answer"] = False
 
@@ -251,7 +238,7 @@ def process_message(sender, text):
                 session["current_question"] = next_q
 
             else:
-                # ── INTERVIEW COMPLETE — WITH CALL TO ACTION ──
+                # INTERVIEW COMPLETE WITH CALL TO ACTION
                 closing = (
                     "And that brings us to the end of our interview! 🎉\n\n"
                     "Thank you sincerely for your time and your thoughtful, honest responses. "
@@ -277,7 +264,7 @@ def process_message(sender, text):
                 session["stage"] = "completed"
                 email_transcript(sender, session["transcript"])
 
-    # ── POST-INTERVIEW STAGE ──
+    # POST-INTERVIEW STAGE
     elif stage == "completed":
         lower = text.lower()
 
@@ -314,7 +301,6 @@ def process_message(sender, text):
 
 @app.route("/webhook", methods=["GET"])
 def verify():
-    """Meta webhook verification."""
     mode      = request.args.get("hub.mode")
     token     = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -326,7 +312,6 @@ def verify():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Receive incoming WhatsApp messages."""
     data = request.json
     try:
         messages = data["entry"][0]["changes"][0]["value"].get("messages", [])
@@ -343,16 +328,6 @@ def webhook():
 
 @app.route("/send-trigger", methods=["POST"])
 def send_trigger():
-    """
-    Send the AI-generated recruitment trigger to one or more respondents.
-
-    POST body (JSON):
-    {
-        "numbers": ["2348012345678", "2348087654321"]
-    }
-
-    Phone numbers must include country code, no '+' or spaces.
-    """
     body    = request.json or {}
     numbers = body.get("numbers", [])
 
@@ -364,7 +339,6 @@ def send_trigger():
 
     for number in numbers:
         resp = send_message(number, trigger)
-        # Initialize session so the agent is ready when they reply
         sessions[number] = {
             "stage": "not_started",
             "q_index": 0,
@@ -383,7 +357,6 @@ def send_trigger():
 
 @app.route("/sessions", methods=["GET"])
 def view_sessions():
-    """Quick overview of all active sessions (for debugging)."""
     summary = {
         num: {"stage": s["stage"], "q_index": s["q_index"]}
         for num, s in sessions.items()
